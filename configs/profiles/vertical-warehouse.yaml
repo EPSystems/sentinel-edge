@@ -1,0 +1,7 @@
+# WarehouseGuard AI defaults — long dwell, quiet-at-night scenes.
+conf_threshold: 0.70
+rule_cooldown_s: 60        # fewer, higher-signal alerts
+dwell_default_s: 120       # loitering threshold for aisles/dock zones
+track_ttl_s: 3.0           # occlusions behind racking
+motion_min_fraction: 0.002 # night scenes are still; keep the gate sensitive
+anchor: bottom

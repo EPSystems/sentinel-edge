@@ -1,0 +1,8 @@
+# FuelGuard AI defaults — fast through-traffic, drive-off correlation.
+conf_threshold: 0.70
+rule_cooldown_s: 30
+dwell_default_s: 45        # pump-zone dwell before a drive-off can arm
+track_ttl_s: 2.0
+track_high_thresh: 0.5
+motion_min_fraction: 0.004 # forecourts are busy; slightly higher gate
+anchor: bottom

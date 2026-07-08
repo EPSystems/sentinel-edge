@@ -1,0 +1,11 @@
+# Hailo-8 (mini-PC M.2) / Hailo-8L (Pi 5) — the standard <=6-camera profile.
+backend: hailo
+model_path: models/yolox-s-640.hef
+model_input_size: 640
+# custom 5-class export (buildspec §5.2): index -> contract class
+class_map:
+  0: person
+  1: car
+  2: truck
+  3: motorcycle
+  4: animal

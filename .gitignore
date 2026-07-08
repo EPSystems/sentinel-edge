@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+data/
+models/*.onnx
+models/*.hef
+models/*.engine
+secrets.json
+.env

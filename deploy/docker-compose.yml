@@ -1,0 +1,33 @@
+# sentinel-edge + go2rtc sidecar (live view, MIT).
+# The device is OUTBOUND-ONLY: no ports are published to the LAN/WAN;
+# go2rtc's API is reachable only on the compose network by the edge service.
+services:
+  sentinel-edge:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      SENTINEL_CLOUD_BASE_URL: ${SENTINEL_CLOUD_BASE_URL}
+      SENTINEL_DEVICE_ID: ${SENTINEL_DEVICE_ID}
+      SENTINEL_DEVICE_TOKEN: ${SENTINEL_DEVICE_TOKEN}
+      SENTINEL_ACCEL_PROFILE: ${SENTINEL_ACCEL_PROFILE:-accel-hailo8}
+      SENTINEL_VERTICAL_PROFILE: ${SENTINEL_VERTICAL_PROFILE:-vertical-petrol}
+    volumes:
+      - edge-data:/app/data
+      - ../models:/app/models:ro
+    depends_on:
+      - go2rtc
+    # Hailo profile: uncomment to pass the accelerator through
+    # devices:
+    #   - /dev/hailo0:/dev/hailo0
+
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    restart: unless-stopped
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+    # no published ports — WebRTC media negotiates outbound via cloud TURN
+
+volumes:
+  edge-data:

@@ -1,0 +1,11 @@
+# Jetson Orin Nano/NX — the >6-camera profile. Engines are built ON the
+# target Jetson (device/JetPack-specific), see buildspec §5.2.
+backend: tensorrt
+model_path: models/yolox-s-640.engine
+model_input_size: 640
+class_map:
+  0: person
+  1: car
+  2: truck
+  3: motorcycle
+  4: animal

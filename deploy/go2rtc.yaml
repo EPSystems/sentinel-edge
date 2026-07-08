@@ -1,0 +1,12 @@
+# Templated at provision time: one stream per camera, named by camera_id so
+# liveview signaling can address src=<camera_id>. Credentials are injected
+# from the device secret store, never committed.
+api:
+  listen: ":1984"   # compose-network only; never published
+
+webrtc:
+  candidates:
+    - stun:stun.l.google.com:19302
+
+streams: {}
+#  <camera_id>: rtsp://user:pass@camera-ip/stream

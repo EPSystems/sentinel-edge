@@ -1,0 +1,17 @@
+# ONNXRuntime CPU/CUDA — bench/dev fallback only, NOT sold (buildspec §4.2).
+# Uses the stock COCO export, hence the COCO class map.
+backend: onnx
+model_path: models/yolox-s.onnx
+model_input_size: 640
+class_map:
+  0: person
+  2: car
+  3: motorcycle
+  5: truck
+  7: truck
+  14: animal
+  15: animal
+  16: animal
+  17: animal
+  18: animal
+  19: animal
