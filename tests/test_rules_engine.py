@@ -102,6 +102,21 @@ def test_line_cross_direction_filter():
     assert any(s.kind == "line_cross" and s.direction == "lr" for s in sigs)
 
 
+def test_line_counts_track_both_directions_regardless_of_cooldown():
+    line = dict(LINE)
+    line["rules"] = [{"rule_type": "line_cross", "direction": "both",
+                      "cooldown_s": 1000}]  # long cooldown must not suppress the count
+    eng = engine_for([line])
+    eng.update([make_track(1, 400, 500)], ts=1.0)
+    eng.update([make_track(1, 600, 500)], ts=2.0)   # rl
+    eng.update([make_track(1, 400, 500)], ts=3.0)   # lr, but cooldown blocks the alert
+    counts = eng.line_counts()
+    assert counts["z-line"]["name"] == "tripwire"
+    assert counts["z-line"]["rl"] == 1
+    assert counts["z-line"]["lr"] == 1
+    assert counts["z-line"]["total"] == 2
+
+
 def test_speed_rule_fires_over_limit():
     zone = {
         "zone_id": "z-s", "name": "speedzone",

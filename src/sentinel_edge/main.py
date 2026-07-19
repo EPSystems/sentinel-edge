@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Callable, Optional
 
 import numpy as np
 
@@ -78,6 +78,11 @@ class InferenceService:
 
 FrameSource = AsyncIterator[tuple[float, float, np.ndarray]]
 
+# Diagnostics tap: (camera, frame_bgr, tracks, candidates, line_counts) per
+# processed frame. Used by `local` mode's preview; must never raise into the
+# pipeline. line_counts is RuleEngine.line_counts() — zone_id -> {name, lr, rl, total}.
+FrameTap = Callable[["CameraConfig", np.ndarray, list, list, dict], None]
+
 
 class CameraPipeline:
     """decode -> motion gate -> detect -> track -> rules -> clip -> enqueue."""
@@ -87,7 +92,8 @@ class CameraPipeline:
                  spool: SpoolManager, health: HealthCollector,
                  signal_sink: "Supervisor",
                  frame_source: Optional[FrameSource] = None,
-                 decoder: Optional[StreamDecoder] = None):
+                 decoder: Optional[StreamDecoder] = None,
+                 on_frame: Optional[FrameTap] = None):
         self.camera = camera
         self.defaults = defaults
         self.inference = inference
@@ -97,6 +103,7 @@ class CameraPipeline:
         self.signal_sink = signal_sink
         self.frame_source = frame_source
         self.decoder = decoder
+        self.on_frame = on_frame
         self.stream_health = decoder.health if decoder else StreamHealth(camera.camera_id)
         self.gate = MotionGate(
             downscale=defaults.motion_downscale,
@@ -162,6 +169,7 @@ class CameraPipeline:
         # standing still generates no motion yet must keep accruing dwell.
         motion = self.gate.process(frame) if self.gate is not None else True
         if not motion and mono_ts > self._tracks_alive_until:
+            self._tap(frame, [], [])
             return
         detections = await self.inference.infer(frame)
         tracks = self.tracker.update(detections, mono_ts)
@@ -170,8 +178,19 @@ class CameraPipeline:
         candidates, signals = self.engine.update(tracks, mono_ts)
         if signals:
             candidates.extend(self.signal_sink.feed_signals(signals))
+        self._tap(frame, tracks, candidates)
         for cand in candidates:
             self._start_clip(cand, mono_ts, wall_ts)
+
+    def _tap(self, frame: np.ndarray, tracks: list, candidates: list) -> None:
+        if self.on_frame is None:
+            return
+        line_counts = self.engine.line_counts() if self.engine else {}
+        try:
+            self.on_frame(self.camera, frame, tracks, candidates, line_counts)
+        except Exception:
+            log.exception("frame tap failed — disabling it")
+            self.on_frame = None
 
     def _start_clip(self, cand: EventCandidate, mono_ts: float, wall_ts: float) -> None:
         task = asyncio.create_task(self._record_and_enqueue(cand, mono_ts, wall_ts))
@@ -226,9 +245,11 @@ def _wall_ts_to_rfc3339(wall_ts: float, mono_ts: float, event_mono_ts: float) ->
 # ---------------------------------------------------------------- supervisor
 
 class Supervisor:
-    def __init__(self, settings: EdgeSettings, defaults: PipelineDefaults):
+    def __init__(self, settings: EdgeSettings, defaults: PipelineDefaults,
+                 frame_tap: Optional[FrameTap] = None):
         self.settings = settings
         self.defaults = defaults
+        self.frame_tap = frame_tap
         data = settings.data_dir
         data.mkdir(parents=True, exist_ok=True)
         self.queue = EventQueue(data / "event-queue.sqlite3")
@@ -290,7 +311,8 @@ class Supervisor:
             return
         decoder = StreamDecoder(cam.camera_id, rtsp_url, cam.detect_fps)
         pipeline = CameraPipeline(cam, self.defaults, self.inference, self.queue,
-                                  self.spool, self.health, self, decoder=decoder)
+                                  self.spool, self.health, self, decoder=decoder,
+                                  on_frame=self.frame_tap)
         self._pipelines[cam.camera_id] = pipeline
         self.health.register_camera(pipeline.stream_health)
         self._pipeline_tasks[cam.camera_id] = asyncio.create_task(
@@ -413,6 +435,18 @@ def cli(argv: Optional[list[str]] = None) -> None:
     sim.add_argument("--config", type=Path,
                      default=Path("configs/examples/device-config.json"))
     sim.add_argument("--duration", type=float, default=12.0)
+    loc = sub.add_parser("local", help="real cameras from a config file, no cloud")
+    loc.add_argument("--config", type=Path, required=True,
+                     help="device-config JSON (rtsp_ref may be a raw rtsp:// URL)")
+    loc.add_argument("--duration", type=float, default=None,
+                     help="stop after N seconds (default: run until Ctrl+C)")
+    loc.add_argument("--preview", type=int, nargs="?", const=8090, default=None,
+                     metavar="PORT", help="serve an annotated live view on "
+                     "http://127.0.0.1:PORT/ (default port 8090)")
+    zn = sub.add_parser("zones", help="draw lines/zones in the browser, save to config")
+    zn.add_argument("--config", type=Path, required=True)
+    zn.add_argument("--camera", default=None, help="camera_id (default: first camera)")
+    zn.add_argument("--port", type=int, default=8091)
     args = parser.parse_args(argv)
 
     settings = EdgeSettings()
@@ -422,6 +456,21 @@ def cli(argv: Optional[list[str]] = None) -> None:
 
     if args.cmd == "simulate":
         asyncio.run(run_simulation(args.config, args.duration))
+        return
+
+    if args.cmd == "local":
+        from .local import run_local
+        try:
+            asyncio.run(run_local(args.config, duration_s=args.duration,
+                                  preview_port=args.preview, settings=settings))
+        except KeyboardInterrupt:
+            pass
+        return
+
+    if args.cmd == "zones":
+        from .local import run_zones_tool
+        run_zones_tool(args.config, camera_id=args.camera, port=args.port,
+                       data_dir=settings.data_dir)
         return
 
     if not settings.device_token or not settings.device_id:

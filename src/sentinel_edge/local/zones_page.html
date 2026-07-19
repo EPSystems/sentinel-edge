@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sentinel-edge — zone editor</title>
+<style>
+  :root { --bg:#14161a; --panel:#1e2128; --line:#3a3f4a; --txt:#d8dce4; --dim:#8b93a2;
+          --accent:#4da3ff; --ok:#39c07a; --warn:#e0a03c; --err:#e05c5c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:14px/1.45 system-ui,Segoe UI,sans-serif; display:flex; min-height:100vh; }
+  #stage { flex:1; padding:16px; min-width:0; }
+  #wrap { position:relative; display:inline-block; max-width:100%; }
+  #wrap img { display:block; max-width:100%; user-select:none; -webkit-user-drag:none; }
+  #overlay { position:absolute; inset:0; cursor:crosshair; }
+  #side { width:380px; background:var(--panel); border-left:1px solid var(--line);
+          padding:16px; overflow-y:auto; }
+  h1 { font-size:16px; margin:0 0 4px; } h2 { font-size:13px; color:var(--dim);
+          margin:0 0 12px; font-weight:normal; }
+  button { background:#2a2f3a; color:var(--txt); border:1px solid var(--line);
+           border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#08131f; font-weight:600; }
+  button.danger { color:var(--err); }
+  .toolbar { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .hint { color:var(--dim); font-size:12px; margin:4px 0 12px; min-height:2.4em; }
+  .zone { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px; }
+  .zone.selected { border-color:var(--accent); }
+  .zone header { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .zone header input[type=text] { flex:1; }
+  .kind { font-size:11px; padding:2px 6px; border-radius:4px; background:#2a2f3a; color:var(--dim); }
+  input[type=text], input[type=number], select {
+    background:#12151a; color:var(--txt); border:1px solid var(--line);
+    border-radius:5px; padding:4px 6px; font:inherit; }
+  input[type=number] { width:70px; }
+  .rule { border-top:1px dashed var(--line); padding-top:8px; margin-top:8px;
+          display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .classes label { margin-right:6px; font-size:12px; color:var(--dim); white-space:nowrap; }
+  #status { position:sticky; bottom:0; background:var(--panel); padding:10px 0 0;
+            border-top:1px solid var(--line); }
+  #msg { font-size:12px; min-height:1.4em; margin-top:6px; }
+  #msg.ok { color:var(--ok); } #msg.err { color:var(--err); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <h1 id="camname">camera</h1>
+  <h2>Click to place points. A <b>line</b> is exactly 2 points (direction is A&rarr;B);
+      a <b>zone</b> is 3+ points &mdash; double-click or press Enter to close it. Esc cancels.</h2>
+  <div class="toolbar">
+    <button id="newline">+ New line</button>
+    <button id="newzone">+ New zone</button>
+    <button id="finish" style="display:none">Finish polygon (Enter)</button>
+    <button id="cancel" style="display:none">Cancel (Esc)</button>
+  </div>
+  <div class="hint" id="hint"></div>
+  <div id="wrap">
+    <img id="snap" src="/snapshot.jpg" alt="camera snapshot">
+    <canvas id="overlay"></canvas>
+  </div>
+</div>
+<div id="side">
+  <h1>Zones &amp; rules</h1>
+  <h2 id="etag"></h2>
+  <div id="zones"></div>
+  <div id="status">
+    <button id="save" class="primary">Save to config</button>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const RULE_TYPES = ["line_cross", "zone_enter", "loiter_dwell", "speed"];
+const CLASSES = ["person", "car", "truck", "motorcycle", "animal"];
+const COLORS = ["#4da3ff", "#39c07a", "#e0a03c", "#c774e8", "#5ad0d0", "#e05c5c"];
+
+let zones = [];          // {zone_id?, name, polygon:[[x,y]..] normalized, rules:[..]}
+let draft = null;        // {kind:"line"|"zone", points:[[x,y]..]}
+let selected = -1;
+
+const img = document.getElementById("snap");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
+
+function fit() {
+  canvas.width = img.clientWidth;
+  canvas.height = img.clientHeight;
+  draw();
+}
+img.addEventListener("load", fit);
+window.addEventListener("resize", fit);
+
+async function loadState() {
+  const s = await (await fetch("/state")).json();
+  document.getElementById("camname").textContent = s.camera_name;
+  document.getElementById("etag").textContent = "config " + s.config_etag;
+  document.title = "zones — " + s.camera_name;
+  zones = s.zones.map(z => ({ ...z, rules: z.rules || [] }));
+  renderSide(); draw();
+}
+
+/* ---------------- drawing ---------------- */
+
+function px(p) { return [p[0] * canvas.width, p[1] * canvas.height]; }
+
+function drawArrow(a, b, color) {
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), s = 11;
+  ctx.beginPath();
+  ctx.moveTo(b[0], b[1]);
+  ctx.lineTo(b[0] - s * Math.cos(ang - 0.45), b[1] - s * Math.sin(ang - 0.45));
+  ctx.lineTo(b[0] - s * Math.cos(ang + 0.45), b[1] - s * Math.sin(ang + 0.45));
+  ctx.closePath(); ctx.fill();
+  label("A", a, color); label("B", b, color);
+}
+
+function label(text, p, color) {
+  ctx.font = "bold 13px system-ui"; ctx.fillStyle = color;
+  ctx.fillText(text, p[0] + 6, p[1] - 6);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  zones.forEach((z, i) => {
+    const c = COLORS[i % COLORS.length], pts = z.polygon.map(px);
+    if (pts.length === 2) {
+      drawArrow(pts[0], pts[1], c);
+      label(z.name, [(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2 - 8], c);
+    } else {
+      ctx.strokeStyle = c; ctx.lineWidth = 2;
+      ctx.fillStyle = c + (i === selected ? "44" : "22");
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      pts.slice(1).forEach(p => ctx.lineTo(p[0], p[1]));
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      label(z.name, pts[0], c);
+    }
+    if (i === selected) pts.forEach(p => dot(p, c));
+  });
+  if (draft) {
+    const pts = draft.points.map(px);
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+    if (pts.length) {
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      pts.slice(1).forEach(p => ctx.lineTo(p[0], p[1])); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    pts.forEach(p => dot(p, "#fff"));
+  }
+}
+
+function dot(p, color) {
+  ctx.fillStyle = color; ctx.beginPath();
+  ctx.arc(p[0], p[1], 4, 0, Math.PI * 2); ctx.fill();
+}
+
+/* ---------------- draft editing ---------------- */
+
+function hint(t) { document.getElementById("hint").textContent = t; }
+function setDraftUi(active) {
+  document.getElementById("finish").style.display =
+    active && draft && draft.kind === "zone" ? "" : "none";
+  document.getElementById("cancel").style.display = active ? "" : "none";
+}
+
+function startDraft(kind) {
+  draft = { kind, points: [] };
+  hint(kind === "line"
+    ? "Line: click point A (start), then point B (end). Crossing direction is relative to A→B."
+    : "Zone: click 3 or more corner points, then double-click / Enter to close.");
+  setDraftUi(true); draw();
+}
+
+canvas.addEventListener("click", e => {
+  if (!draft) return;
+  const r = canvas.getBoundingClientRect();
+  const p = [(e.clientX - r.left) / canvas.width, (e.clientY - r.top) / canvas.height];
+  draft.points.push([Math.min(Math.max(p[0], 0), 1), Math.min(Math.max(p[1], 0), 1)]);
+  if (draft.kind === "line" && draft.points.length === 2) finishDraft();
+  draw();
+});
+canvas.addEventListener("dblclick", () => {
+  if (draft && draft.kind === "zone" && draft.points.length >= 3) finishDraft();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && draft) { draft = null; hint(""); setDraftUi(false); draw(); }
+  if (e.key === "Enter" && draft && draft.kind === "zone" && draft.points.length >= 3)
+    finishDraft();
+});
+document.getElementById("newline").onclick = () => startDraft("line");
+document.getElementById("newzone").onclick = () => startDraft("zone");
+document.getElementById("finish").onclick = () => finishDraft();
+document.getElementById("cancel").onclick = () => {
+  draft = null; hint(""); setDraftUi(false); draw();
+};
+
+function finishDraft() {
+  const isLine = draft.kind === "line";
+  zones.push({
+    name: (isLine ? "Line " : "Zone ") + (zones.length + 1),
+    polygon: draft.points.map(p => [Math.round(p[0] * 10000) / 10000,
+                                    Math.round(p[1] * 10000) / 10000]),
+    rules: [isLine
+      ? { rule_type: "line_cross", direction: "both", classes: ["person"], min_confidence: 0.5 }
+      : { rule_type: "zone_enter", classes: ["person"], min_confidence: 0.5 }],
+  });
+  draft = null; selected = zones.length - 1;
+  hint(""); setDraftUi(false); renderSide(); draw();
+}
+
+/* ---------------- side panel ---------------- */
+
+function renderSide() {
+  const root = document.getElementById("zones");
+  root.innerHTML = "";
+  if (!zones.length) root.innerHTML = "<p class='hint'>No zones yet — draw one on the image.</p>";
+  zones.forEach((z, i) => {
+    const isLine = z.polygon.length === 2;
+    const el = document.createElement("div");
+    el.className = "zone" + (i === selected ? " selected" : "");
+    el.addEventListener("click", () => { if (selected !== i) { selected = i; renderSide(); draw(); } });
+
+    const head = document.createElement("header");
+    const kind = Object.assign(document.createElement("span"),
+      { className: "kind", textContent: isLine ? "line A→B" : `zone · ${z.polygon.length} pts` });
+    const name = Object.assign(document.createElement("input"),
+      { type: "text", value: z.name });
+    name.addEventListener("input", () => { z.name = name.value; draw(); });
+    const del = Object.assign(document.createElement("button"),
+      { className: "danger", textContent: "✕", title: "delete zone" });
+    del.addEventListener("click", ev => {
+      ev.stopPropagation();
+      zones.splice(i, 1); selected = -1; renderSide(); draw();
+    });
+    head.append(kind, name, del);
+    el.append(head);
+
+    z.rules.forEach((rule, ri) => el.append(ruleRow(z, rule, ri, isLine)));
+    const add = Object.assign(document.createElement("button"), { textContent: "+ rule" });
+    add.addEventListener("click", ev => {
+      ev.stopPropagation();
+      z.rules.push(isLine
+        ? { rule_type: "line_cross", direction: "both", classes: ["person"], min_confidence: 0.5 }
+        : { rule_type: "zone_enter", classes: ["person"], min_confidence: 0.5 });
+      renderSide();
+    });
+    el.append(add);
+    root.append(el);
+  });
+}
+
+function ruleRow(z, rule, ri, isLine) {
+  const row = document.createElement("div");
+  row.className = "rule";
+
+  const type = document.createElement("select");
+  const allowed = isLine ? ["line_cross"] : RULE_TYPES.filter(t => t !== "line_cross");
+  allowed.forEach(t => type.append(Object.assign(document.createElement("option"),
+    { value: t, textContent: t, selected: rule.rule_type === t })));
+  if (!allowed.includes(rule.rule_type)) rule.rule_type = allowed[0];
+  type.addEventListener("change", () => { rule.rule_type = type.value; renderSide(); });
+  row.append(type);
+
+  if (rule.rule_type === "line_cross") {
+    const dir = document.createElement("select");
+    [["both", "both directions"], ["lr", "A→B left-to-right"], ["rl", "A→B right-to-left"]]
+      .forEach(([v, t]) => dir.append(Object.assign(document.createElement("option"),
+        { value: v, textContent: t, selected: (rule.direction || "both") === v })));
+    dir.addEventListener("change", () => { rule.direction = dir.value; });
+    row.append(dir);
+  }
+  if (rule.rule_type === "loiter_dwell") {
+    row.append("dwell s:", numInput(rule, "dwell_s", 60, 1));
+  }
+  if (rule.rule_type === "speed") {
+    row.append("limit km/h:", numInput(rule, "speed_limit_kmh", 30, 1));
+  }
+  row.append("min conf:", numInput(rule, "min_confidence", 0.5, 0.05));
+
+  const cls = document.createElement("span");
+  cls.className = "classes";
+  CLASSES.forEach(c => {
+    const lab = document.createElement("label");
+    const cb = Object.assign(document.createElement("input"),
+      { type: "checkbox", checked: (rule.classes || []).includes(c) });
+    cb.addEventListener("change", () => {
+      const set = new Set(rule.classes || []);
+      cb.checked ? set.add(c) : set.delete(c);
+      rule.classes = [...set];
+    });
+    lab.append(cb, " " + c);
+    cls.append(lab);
+  });
+  row.append(cls);
+
+  const del = Object.assign(document.createElement("button"),
+    { className: "danger", textContent: "✕", title: "delete rule" });
+  del.addEventListener("click", ev => {
+    ev.stopPropagation();
+    z.rules.splice(ri, 1); renderSide();
+  });
+  row.append(del);
+  return row;
+}
+
+function numInput(obj, key, fallback, step) {
+  const inp = Object.assign(document.createElement("input"),
+    { type: "number", step, value: obj[key] != null ? obj[key] : fallback });
+  obj[key] = parseFloat(inp.value);
+  inp.addEventListener("input", () => {
+    const v = parseFloat(inp.value);
+    if (!Number.isNaN(v)) obj[key] = v;
+  });
+  return inp;
+}
+
+/* ---------------- save ---------------- */
+
+document.getElementById("save").addEventListener("click", async () => {
+  const msg = document.getElementById("msg");
+  msg.className = ""; msg.textContent = "saving…";
+  try {
+    const res = await fetch("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ zones }),
+    });
+    const out = await res.json();
+    if (!res.ok || !out.ok) throw new Error(out.error || res.statusText);
+    msg.className = "ok";
+    msg.textContent = "saved — " + out.config_etag;
+    document.getElementById("etag").textContent = "config " + out.config_etag;
+  } catch (e) {
+    msg.className = "err"; msg.textContent = "save failed: " + e.message;
+  }
+});
+
+loadState().then(fit);
+</script>
+</body>
+</html>

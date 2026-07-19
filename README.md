@@ -25,12 +25,15 @@ src/sentinel_edge/
 ├── publish/     durable SQLite queue + presign→PUT→POST publisher
 ├── cloudlink/   outbound WSS: config down, heartbeat up, live-view signaling
 ├── health/      heartbeat builder (drives the 90 s device-red SLO)
+├── local/       bench tools: `local` mode (real cameras, no cloud) + `zones` editor
 └── main.py      supervisor + per-camera pipelines + CLI
 configs/profiles/  accelerator + vertical presets (see §4)
 configs/examples/  sample tenant DeviceConfig for simulate
 deploy/            Dockerfile, compose (+go2rtc), provisioning + claim flow
-tests/             96 tests — no camera, GPU, ffmpeg or cloud needed
-docs/              HARDWARE-BRINGUP.md — Pavel's device-lane task list
+scripts/           fetch_model.py — download + verify the stock YOLOX-S ONNX
+tests/             104 tests — no camera, GPU, ffmpeg or cloud needed
+docs/              HARDWARE-BRINGUP.md (Pavel's device lane),
+                   FIRST-CAMERA.md (first physical line-cross test)
 legacy/            Pavel's original prototype (superseded)
 ```
 
@@ -65,8 +68,8 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows        (Linux/mac: source .venv/bin/activate)
 pip install -e ".[dev]"
 
-# 2. run the test suite (~15 s, fully offline)
-pytest                            # expect: 96 passed
+# 2. run the test suite (~40 s, fully offline)
+pytest                            # expect: 104 passed
 pytest tests/test_rules_engine.py -k line_cross -v     # single area
 pytest -q tests/test_simulation.py                     # the end-to-end test
 
@@ -78,6 +81,15 @@ python -m sentinel_edge simulate
 #   EVENT line_cross person ... queued
 #   simulation done: 2 event(s) queued
 python -m sentinel_edge simulate --config configs/examples/device-config.json --duration 12
+
+# 4. run against a REAL camera with no cloud (see docs/FIRST-CAMERA.md)
+pip install -e ".[dev,onnx,rtsp]"
+python scripts/fetch_model.py --verify          # models/yolox-s.onnx (36 MB)
+python -m sentinel_edge zones --config my-site.json   # draw lines/zones in the
+#   browser on a live snapshot (http://127.0.0.1:8091) and save to the config
+python -m sentinel_edge local --config my-site.json --preview
+#   real RTSP + ONNX detection; events queue locally, clips land in data/spool/;
+#   annotated live view at http://127.0.0.1:8090
 ```
 
 What the tests cover: geometry + line-cross edge cases (slow/fast/on-line/

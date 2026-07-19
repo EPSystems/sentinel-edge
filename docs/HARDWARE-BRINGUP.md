@@ -39,6 +39,9 @@ Ultralytics Enterprise quote on file as fallback only.
 2. Export ONNX (fixed 640×640) → verify on a dev box:
    `pip install -e ".[onnx]"`, drop the file at `models/yolox-s.onnx`,
    set `SENTINEL_ACCEL_PROFILE=accel-onnx-cpu`, feed a test RTSP stream.
+   The *stock* COCO export is fetched+verified by `scripts/fetch_model.py`
+   and already proven against a live RTSP stream end-to-end — see
+   `docs/FIRST-CAMERA.md`; only the custom 5-class re-head remains here.
    Decode/NMS is already implemented (`detect/backend_onnx.py`) — if your
    export uses `decode_in_inference=True`, tell me and I'll add the flag.
 3. **Hailo:** ONNX → HEF via the Dataflow Compiler, INT8 with a
@@ -68,7 +71,9 @@ API-version fixes (HailoRT bindings especially). Validate:
 
 ## 4. Real-camera RTSP validation (`streams/`)
 
-Against at least 2 real camera brands (Hikvision/Dahua cover most BG sites):
+Against at least 2 real camera brands (Hikvision/Dahua cover most BG sites).
+Use `sentinel-edge local --preview` + the `zones` editor for all of this —
+the walkthrough is `docs/FIRST-CAMERA.md` (no cloud needed):
 
 - PyAV path (`pip install -e ".[rtsp]"`) and FFmpeg fallback both connect.
 - **Cable-pull test:** yank the camera cable 60 s — pipeline must resume

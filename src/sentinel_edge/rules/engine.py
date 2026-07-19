@@ -76,6 +76,7 @@ class RuleEngine:
         self._last_anchor: dict[int, tuple[float, float]] = {}
         self._cooldown: dict[tuple[int, str], float] = {}        # (track, rule_key) -> last fired
         self._last_seen: dict[int, float] = {}
+        self._line_counts: dict[str, dict[str, int]] = {}        # zone_id -> {"lr": n, "rl": n}
         self._compile(camera)
 
     # ------------------------------------------------------------ config
@@ -115,6 +116,18 @@ class RuleEngine:
         return [(z, r) for z in self._zones for r in z.rules
                 if r.rule_type == RuleType.lpr_hit]
 
+    def line_counts(self) -> dict[str, dict[str, Any]]:
+        """zone_id -> {"name", "lr", "rl", "total"} for every line zone that has
+        registered at least one crossing. Counts every geometric crossing
+        (independent of alert cooldown — the cooldown throttles notifications,
+        not the underlying physical event)."""
+        names = {z.zone_id: z.name for z in self._zones}
+        return {
+            zid: {"name": names.get(zid, zid), "lr": c.get("lr", 0), "rl": c.get("rl", 0),
+                  "total": c.get("lr", 0) + c.get("rl", 0)}
+            for zid, c in self._line_counts.items()
+        }
+
     # ------------------------------------------------------------ evaluate
 
     def update(self, tracks: list[Track], ts: float) -> tuple[list[EventCandidate], list[Signal]]:
@@ -153,6 +166,11 @@ class RuleEngine:
         crossed = geometry.crossing_direction(prev_anchor, anchor, a, b, overshoot=0.05)
         if crossed is None:
             return
+        counts = self._line_counts.setdefault(zone.zone_id, {"lr": 0, "rl": 0})
+        counts[crossed] = counts.get(crossed, 0) + 1
+        log.info("line_cross count zone=%s (%s) direction=%s lr=%d rl=%d total=%d",
+                 zone.zone_id, zone.name, crossed, counts.get("lr", 0), counts.get("rl", 0),
+                 counts.get("lr", 0) + counts.get("rl", 0))
         # always signal (drive-off correlation needs exit crossings even when
         # no explicit line_cross rule is configured on the exit line)
         signals.append(Signal("line_cross", self.camera_id, zone.zone_id,
