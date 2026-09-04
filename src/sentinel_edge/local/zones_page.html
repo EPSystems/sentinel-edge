@@ -269,6 +269,21 @@ function ruleRow(z, rule, ri, isLine) {
         { value: v, textContent: t, selected: (rule.direction || "both") === v })));
     dir.addEventListener("change", () => { rule.direction = dir.value; });
     row.append(dir);
+
+    // which point of the box counts as "crossing" — feet by default; head for
+    // high-mount cameras where only the head is in frame at the line.
+    const anc = document.createElement("select");
+    anc.title = "Which point of the person/vehicle box must cross the line. " +
+      "Feet/wheels is right for a floor line; head suits high cameras that only " +
+      "see the head near the entrance.";
+    [["", "anchor: camera default"], ["bottom", "anchor: feet/wheels"],
+     ["center", "anchor: center"], ["top", "anchor: head"]]
+      .forEach(([v, t]) => anc.append(Object.assign(document.createElement("option"),
+        { value: v, textContent: t, selected: (rule.anchor || "") === v })));
+    anc.addEventListener("change", () => {
+      if (anc.value) rule.anchor = anc.value; else delete rule.anchor;
+    });
+    row.append(anc);
   }
   if (rule.rule_type === "loiter_dwell") {
     row.append("dwell s:", numInput(rule, "dwell_s", 60, 1));

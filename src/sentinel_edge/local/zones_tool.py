@@ -28,7 +28,7 @@ SNAPSHOT_TIMEOUT_S = 30.0
 
 # Rule fields the page may send; anything else is dropped before validation
 # (contracts.Rule is additive/extra-allow, so unknown junk would slip through).
-_RULE_FIELDS = ("rule_type", "classes", "min_confidence", "direction",
+_RULE_FIELDS = ("rule_type", "classes", "min_confidence", "direction", "anchor",
                 "dwell_s", "cooldown_s", "speed_limit_kmh")
 
 

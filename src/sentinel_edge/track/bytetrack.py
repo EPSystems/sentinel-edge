@@ -22,6 +22,23 @@ from ..contracts import ObjectClass
 BBox = tuple[float, float, float, float]  # x1, y1, x2, y2
 
 
+def anchor_of(bbox: BBox, kind: str) -> tuple[float, float]:
+    """The tracking anchor of a bbox for a given anchor kind:
+    - "bottom": bottom-center = feet/wheels (ground plane; the default),
+    - "center": box centroid (gates / vehicle mid-body),
+    - "top":    top-center = head (high-mount cameras where only the head is
+                reliably in frame near the line).
+    Unknown kinds fall back to "bottom" — the documented default and the
+    safest choice on the ground plane."""
+    x1, y1, x2, y2 = bbox
+    cx = (x1 + x2) / 2.0
+    if kind == "top":
+        return (cx, y1)
+    if kind == "center":
+        return (cx, (y1 + y2) / 2.0)
+    return (cx, y2)
+
+
 @dataclass
 class Detection:
     object_class: ObjectClass
@@ -50,8 +67,13 @@ class Track:
         x1, _, x2, y2 = self.bbox
         return ((x1 + x2) / 2.0, y2)
 
+    @property
+    def top_center(self) -> tuple[float, float]:
+        x1, y1, x2, _ = self.bbox
+        return ((x1 + x2) / 2.0, y1)
+
     def anchor(self, kind: str) -> tuple[float, float]:
-        return self.bottom_center if kind == "bottom" else self.centroid
+        return anchor_of(self.bbox, kind)
 
 
 def iou_matrix(a: Sequence[BBox], b: Sequence[BBox]) -> np.ndarray:

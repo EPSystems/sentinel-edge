@@ -48,6 +48,12 @@ class RuleType(str, Enum):
     lpr_hit = "lpr_hit"
 
 
+# Which point of a track's bbox defines a line crossing. "bottom" (feet/wheels,
+# on the ground plane) is the default; "top" (head) is for high-mount cameras
+# where only the head is reliably in frame at the line. Applies to line_cross.
+ANCHOR_KINDS = ("bottom", "center", "top")
+
+
 def utcnow_rfc3339() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -101,6 +107,7 @@ class Rule(BaseModel):
     # engine-understood additive extras
     dwell_s: Optional[float] = None            # loiter_dwell
     direction: Optional[str] = None            # line_cross: "lr" | "rl" | "both"
+    anchor: Optional[str] = None               # line_cross: "bottom" | "center" | "top"
     speed_limit_kmh: Optional[float] = None    # speed
     cooldown_s: Optional[float] = None         # any rule; default from profile
     exit_zone_ref: Optional[str] = None        # driveoff: zone_id of the exit line
@@ -112,6 +119,13 @@ class Rule(BaseModel):
     def _coerce_classes(cls, v: Any) -> Any:
         if isinstance(v, list):
             return [ObjectClass.coerce(c) if isinstance(c, str) else c for c in v]
+        return v
+
+    @field_validator("anchor")
+    @classmethod
+    def _validate_anchor(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ANCHOR_KINDS:
+            raise ValueError(f"anchor must be one of {ANCHOR_KINDS} or omitted, got {v!r}")
         return v
 
 

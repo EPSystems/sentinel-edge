@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from ..config import PipelineDefaults
 from ..contracts import CameraConfig, ObjectClass, Rule, RuleType
-from ..track import Track
+from ..track import Track, anchor_of
 from . import geometry
 from .speed import SpeedEstimator
 
@@ -60,6 +60,7 @@ class _CompiledZone:
     polygon_px: list[tuple[float, float]]
     is_line: bool
     rules: list[Rule]
+    anchor: str  # which bbox point defines a crossing (line zones); default from profile
 
 
 class RuleEngine:
@@ -73,7 +74,9 @@ class RuleEngine:
         # state
         self._inside_since: dict[tuple[int, str], float] = {}   # (track, zone) -> entered ts
         self._dwell_fired: set[tuple[int, str]] = set()          # fired this presence
-        self._last_anchor: dict[int, tuple[float, float]] = {}
+        # last bbox per track, so a line's own anchor (feet/center/head) can be
+        # recomputed for the previous frame even when lines use different anchors.
+        self._last_bbox: dict[int, tuple[float, float, float, float]] = {}
         self._cooldown: dict[tuple[int, str], float] = {}        # (track, rule_key) -> last fired
         self._last_seen: dict[int, float] = {}
         self._line_counts: dict[str, dict[str, int]] = {}        # zone_id -> {"lr": n, "rl": n}
@@ -89,14 +92,26 @@ class RuleEngine:
             except ValueError as e:
                 log.warning("zone %s (%s) skipped: %s", z.zone_id, z.name, e)
                 continue
+            is_line = geometry.polygon_is_line(z.polygon)
             zones.append(_CompiledZone(
                 zone_id=z.zone_id,
                 name=z.name,
                 polygon_px=geometry.denormalize(z.polygon, self.frame_w, self.frame_h),
-                is_line=geometry.polygon_is_line(z.polygon),
+                is_line=is_line,
                 rules=list(z.rules),
+                anchor=self._resolve_line_anchor(z.rules) if is_line else self.defaults.anchor,
             ))
         self._zones = zones
+
+    def _resolve_line_anchor(self, rules: list[Rule]) -> str:
+        """A line's crossing anchor comes from its line_cross rule(s) — the whole
+        line (crossing test, count, signal, every line_cross rule on it) shares
+        one anchor. First line_cross rule that pins an anchor wins; otherwise the
+        camera/profile default. Authored per-line in the zones editor."""
+        for r in rules:
+            if r.rule_type == RuleType.line_cross and r.anchor:
+                return r.anchor
+        return self.defaults.anchor
 
     def swap_config(self, camera: CameraConfig) -> None:
         """Hot-reload (Flow B). Presence/line state resets — the new geometry
@@ -106,7 +121,7 @@ class RuleEngine:
         self._speed = SpeedEstimator(camera.calibration)
         self._inside_since.clear()
         self._dwell_fired.clear()
-        self._last_anchor.clear()
+        self._last_bbox.clear()
 
     def driveoff_rules(self) -> list[tuple[_CompiledZone, Rule]]:
         return [(z, r) for z in self._zones for r in z.rules
@@ -136,20 +151,25 @@ class RuleEngine:
 
         for track in tracks:
             self._last_seen[track.track_id] = ts
-            anchor = track.anchor(self.defaults.anchor)
-            prev_anchor = self._last_anchor.get(track.track_id)
-            speed_kmh = self._speed.update(track.track_id, ts, anchor)
+            # Presence and speed use the profile default anchor (feet stay on the
+            # ground plane — required for metric speed). Line zones may override
+            # per line, so their anchor is resolved inside the loop.
+            default_anchor = track.anchor(self.defaults.anchor)
+            prev_bbox = self._last_bbox.get(track.track_id)
+            speed_kmh = self._speed.update(track.track_id, ts, default_anchor)
             eligible = track.age_frames >= self.defaults.min_track_age_frames
 
             for zone in self._zones:
                 if zone.is_line:
-                    self._eval_line(zone, track, prev_anchor, anchor, ts, eligible,
+                    curr = track.anchor(zone.anchor)
+                    prev = anchor_of(prev_bbox, zone.anchor) if prev_bbox is not None else None
+                    self._eval_line(zone, track, prev, curr, ts, eligible,
                                     candidates, signals)
                 else:
-                    self._eval_polygon(zone, track, anchor, ts, eligible, speed_kmh,
+                    self._eval_polygon(zone, track, default_anchor, ts, eligible, speed_kmh,
                                        candidates, signals)
 
-            self._last_anchor[track.track_id] = anchor
+            self._last_bbox[track.track_id] = track.bbox
 
         self._prune(ts, {t.track_id for t in tracks})
         return candidates, signals
@@ -278,7 +298,7 @@ class RuleEngine:
             return
         for tid in dead:
             self._last_seen.pop(tid, None)
-            self._last_anchor.pop(tid, None)
+            self._last_bbox.pop(tid, None)
         self._inside_since = {k: v for k, v in self._inside_since.items() if k[0] not in dead}
         self._dwell_fired = {k for k in self._dwell_fired if k[0] not in dead}
         self._cooldown = {k: v for k, v in self._cooldown.items() if k[0] not in dead}

@@ -22,6 +22,12 @@ def make_track(tid, x, y, cls="person", conf=0.9, age=10):
                  history=deque(maxlen=90))
 
 
+def track_box(tid, x1, y1, x2, y2, cls="person", conf=0.9, age=10):
+    # explicit bbox so tests can place feet/center/head independently
+    return Track(track_id=tid, object_class=ObjectClass(cls), confidence=conf,
+                 bbox=(x1, y1, x2, y2), age_frames=age, history=deque(maxlen=90))
+
+
 ZONE = {
     "zone_id": "z-1", "name": "restricted",
     "polygon": [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]],  # px 400..600
@@ -115,6 +121,86 @@ def test_line_counts_track_both_directions_regardless_of_cooldown():
     assert counts["z-line"]["rl"] == 1
     assert counts["z-line"]["lr"] == 1
     assert counts["z-line"]["total"] == 2
+
+
+# Horizontal line at y=500 (px). Anchor kind (feet/center/head) only changes an
+# anchor's *y*, so a horizontal line is what distinguishes them — on a vertical
+# line all three share the box's center-x and behave identically.
+HLINE = {
+    "zone_id": "z-hline", "name": "entrance",
+    "polygon": [[0.1, 0.5], [0.9, 0.5]],
+    "rules": [{"rule_type": "line_cross", "direction": "both"}],
+}
+
+# Receding person (moving up the frame): frame 1 the whole box is below y=500;
+# frame 2 the head (top) has crossed above it while the feet (bottom) have not.
+_HEAD_CROSSES_FEET_DONT = (
+    (490, 510, 510, 560),   # top=510  center=535  bottom=560   (all below 500)
+    (490, 480, 510, 530),   # top=480  center=505  bottom=530   (only top < 500)
+)
+
+
+def _line_with(anchor=None, **extra):
+    rule = {"rule_type": "line_cross", "direction": "both"}
+    if anchor is not None:
+        rule["anchor"] = anchor
+    rule.update(extra)
+    z = dict(HLINE)
+    z["rules"] = [rule]
+    return z
+
+
+def test_line_cross_head_anchor_fires_when_only_head_crosses():
+    f1, f2 = _HEAD_CROSSES_FEET_DONT
+    eng = engine_for([_line_with(anchor="top")])
+    eng.update([track_box(1, *f1)], ts=1.0)
+    cands, _ = eng.update([track_box(1, *f2)], ts=2.0)
+    assert len(cands) == 1 and cands[0].rule_type == RuleType.line_cross
+
+
+def test_line_cross_default_bottom_anchor_misses_head_only_crossing():
+    # same motion, no per-line anchor -> profile default ("bottom") -> feet never
+    # cross -> no event. This is exactly the case the head anchor exists to fix.
+    f1, f2 = _HEAD_CROSSES_FEET_DONT
+    eng = engine_for([_line_with()])  # anchor omitted
+    eng.update([track_box(1, *f1)], ts=1.0)
+    cands, _ = eng.update([track_box(1, *f2)], ts=2.0)
+    assert cands == []
+
+
+def test_line_cross_anchor_is_per_line_and_prev_is_recomputed_per_anchor():
+    # two lines at the SAME geometry but different anchors on one camera: the
+    # head line fires, the feet line does not, from a single stored prev bbox.
+    top_line = _line_with(anchor="top")
+    bot_line = dict(HLINE)
+    bot_line["zone_id"] = "z-feet"
+    bot_line["rules"] = [{"rule_type": "line_cross", "direction": "both", "anchor": "bottom"}]
+    f1, f2 = _HEAD_CROSSES_FEET_DONT
+    eng = engine_for([top_line, bot_line])
+    eng.update([track_box(1, *f1)], ts=1.0)
+    cands, _ = eng.update([track_box(1, *f2)], ts=2.0)
+    zones_fired = {c.zone_id for c in cands}
+    assert zones_fired == {"z-hline"}                 # head line only
+    counts = eng.line_counts()
+    assert counts["z-hline"]["total"] == 1
+    assert "z-feet" not in counts                     # feet line never counted
+
+
+def test_line_cross_anchor_falls_back_to_profile_default():
+    # no per-line anchor, but the camera/profile default is "top": head crossing
+    # fires. Proves _resolve_line_anchor honours the profile default.
+    f1, f2 = _HEAD_CROSSES_FEET_DONT
+    eng = engine_for([_line_with()], anchor="top")
+    eng.update([track_box(1, *f1)], ts=1.0)
+    cands, _ = eng.update([track_box(1, *f2)], ts=2.0)
+    assert len(cands) == 1
+
+
+def test_invalid_anchor_rejected_by_contract():
+    import pytest
+    from sentinel_edge.contracts import Rule
+    with pytest.raises(ValueError):
+        Rule.model_validate({"rule_type": "line_cross", "anchor": "elbow"})
 
 
 def test_speed_rule_fires_over_limit():
